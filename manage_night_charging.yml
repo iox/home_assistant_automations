@@ -19,37 +19,49 @@ action:
               current_consumption: "{{ states('sensor.totalgridpower') | int }}"
               home_battery_soc: "{{ states('sensor.inverter_battery') | int }}"
               car_soc: "{{ states('sensor.iorek_byrnison_battery_level') | int }}"
-
-              # Calculate remaining power available for charging
-              available_power: "{{ max_power - current_consumption }}"
+              
 
           - choose:
               # Case 1: Home batteries need charging
               - conditions:
                   - condition: numeric_state
-                    entity_id: sensor.home_battery_soc
+                    entity_id: sensor.inverter_battery
                     below: 85
                 sequence:
                   - variables:
+                      current_battery_power: "{{ states('sensor.totalbatterypower') | int }}"
+                      available_power: "{{ max_power - current_consumption - current_battery_power }}"
                       battery_max_power: "{{ available_power if available_power <= 2500 else 2500 }}"
-                      battery_amps: "{{ (battery_max_power / 50) | int if (battery_max_power / 50) | int >= 1 else 1 }}"
+                      battery_amps: "{{ (battery_max_power / 100) | int if (battery_max_power / 100) | int >= 1 else 1 }}"
+                      current_car_switch: "{{ states('switch.iorek_byrnison_charge') == 'on' }}"
                   
                   - service: number.set_value
                     target:
                       entity_id: number.inverter_2_battery_grid_charging_current
                     data:
                       value: "{{ battery_amps }}"
+                  
+                  - choose:
+                    - conditions:
+                        - condition: template
+                          value_template: "{{ current_car_switch }}"
+                      sequence:
+                        - service: homeassistant.turn_off
+                          target:
+                            entity_id: switch.iorek_byrnison_charge
 
               # Case 2: Home batteries are sufficiently charged, charge the car
               - conditions:
                   - condition: numeric_state
-                    entity_id: sensor.home_battery_soc
+                    entity_id: sensor.inverter_battery
                     above: 84
                   - condition: numeric_state
                     entity_id: sensor.car_soc
                     below: 70
                 sequence:
                   - variables:
+                      current_car_power: "{{ states('sensor.iorek_byrnison_charger_power') | int }}"
+                      available_power: "{{ max_power - current_consumption + current_car_power }}"
                       car_max_power: "{{ available_power if available_power <= 2925 else 2925 }}"
                       car_amps: "{{ ((car_max_power / 225) | int) if ((car_max_power / 225) | int) >= 5 else 5 }}"
                       current_car_amps: "{{ states('number.iorek_byrnison_charge_current') | int }}"
@@ -62,29 +74,18 @@ action:
                         sequence:
                           - service: number.set_value
                             target:
+                              entity_id: number.inverter_2_battery_grid_charging_current
+                            data:
+                              value: 0
+                          - service: number.set_value
+                            target:
                               entity_id: number.iorek_byrnison_charge_current
                             data:
                               value: "{{ car_amps }}"
                           - service: homeassistant.turn_on
                             target:
                               entity_id: switch.iorek_byrnison_charge
-
-          - service: number.set_value  # If neither needs charging, set amps to 0
-            target:
-              entity_id: number.inverter_2_battery_grid_charging_current
-            data:
-              value: 0
-
-          - variables:
-              current_car_switch: "{{ states('switch.iorek_byrnison_charge') == 'on' }}"
-          - choose:
-              - conditions:
-                  - condition: template
-                    value_template: "{{ current_car_switch }}"
-                sequence:
-                  - service: homeassistant.turn_off
-                    target:
-                      entity_id: switch.iorek_byrnison_charge
+          
 
       # Outside cheap electricity period
       - conditions:
